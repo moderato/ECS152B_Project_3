@@ -2,6 +2,10 @@
 #define ENCRYPTIONLIBRARY_H
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C"{
+#endif
+
 #define P2PI_TRUST_N        4611685846628697223ULL
 #define P2PI_TRUST_E        5ULL
 
@@ -11,6 +15,10 @@ void GenerateRandomString(uint8_t *str, uint32_t length, uint64_t sequence);
 void PrivateEncryptDecrypt(uint8_t *str, uint32_t length, uint64_t sequence);
 uint64_t GenerateRandomValue();
 uint32_t AuthenticationChecksum(uint32_t sec, const char *str, uint64_t e, uint64_t n);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
 

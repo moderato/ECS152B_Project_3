@@ -17,6 +17,7 @@
 #include <termios.h>
 #include <ctype.h>
 #include "userlist.h"
+#include "EncryptionLibrary.h"
 
 #define BUFFER_SIZE 512
 #define MAX_FD      50
@@ -32,6 +33,11 @@
 #define LISTREPLY   0x0008
 #define DATA        0x0009
 #define DISCONTINUE 0x000A
+#define ESTABCRYPT  0x000B
+#define ACCPTCRYPT  0x000C
+#define DATACRYPT   0x000D  
+#define REQAUTH     0x0010
+#define AUTHREPLY   0x0011
 
 // State of non-canonical mode
 #define NORMAL      0x0000
@@ -49,12 +55,12 @@
 #define TCPPORT     0x0004
 #define USERNAME    0x0005
 
-char* const short_options = "u:d:t:i:m:p:";  
+const char* short_options = "p:h:";  
 int UDPfd, TCPfd; // UDP and TCP server sockets
 int TCPs[MAX_FD-3], msgLen[MAX_FD-3], zeroCount[MAX_FD-3]; // For each user
 char hostname[256], *username; // Hostname and 
 char messages[MAX_FD-3][BUFFER_SIZE]; // For each user
-int uport = 50550, tport = 50551, uitimeout = 5, umtimeout = 60; // For this machine
+int uport = 50550, tport = 50551, secport = 50552, uitimeout = 5, umtimeout = 60; // For this machine
 int nonCanState = NORMAL; // Non-canonical mode state
 struct sockaddr_in BroadcastAddress, UserAddress; // For broadcasting and sending tcp
 struct termios SavedTermAttributes; // For non canonical mode
@@ -85,6 +91,7 @@ int firstAvailableFD(){
     return i;
 }
 
+// Search for a specific file descriptor
 int searchFD(int fd){
 	int i = 3;
 	while(fds[i].fd != fd){
@@ -130,24 +137,16 @@ void DisplayMessage(char *data, int length){
 }
 
 struct option long_options[] = {
-    { "username",     1,   NULL,    'u'     },  
-    { "up",           1,   NULL,    'd'     },  
-    { "tp",           1,   NULL,    't'     },
-    { "dt",           1,   NULL,    'i'     },
-    { "dm",           1,   NULL,    'm'     },
-    { "pp",           1,   NULL,    'p'     },
+    { "ap",           1,   NULL,    'p'     },
+    { "ah",           1,   NULL,    'h'     },
     {      0,         0,      0,     0      },  
 };
 
 static void usage(void){
     printf(
         "Usage: p2pim [options]\n"
-        "  -u,   --username       Username\n"
-        "  -d,   --up             UDP port\n"
-        "  -t,   --tp             TCP port\n"
-        "  -i,   --dt             UDP initial timeout\n"
-        "  -m,   --dm             UDP maximum timeout\n"
-        "  -p,   --pp             Host/port to send unicast UDP discovery message\n"
+        "  -p,   --ap     Specify UDP port for trust anchor\n"
+        "  -h,   --ah     Specify host (and port) for unicast\n"
     );
 }
 
@@ -199,7 +198,7 @@ int header(char* message, uint16_t type, int UDPport, int TCPport, char* Usernam
         case DATA:
         case DISCONTINUE:
             break;
-        case LISTREPLY:
+        case LISTREPLY:{    
             conversionL = htonl(getUserNum());
             memcpy(temp, &conversionL, 4);
             temp += 4;
@@ -233,6 +232,7 @@ int header(char* message, uint16_t type, int UDPport, int TCPport, char* Usernam
             }
             length = temp - message;
             break;
+        }
         default:
             length = -1;
             break;
@@ -337,7 +337,8 @@ void printInfo(){
 	printf("Hostname is %s.\n", hostname);
 	printf("Username is %s.\n", username);
 	printf("UDP port is %d.\n", uport);
-	printf("TCP port is %d.\n", tport); 
+	printf("TCP port is %d.\n", tport);
+        printf("UDP port for authentication is %d.\n", secport);
 	printf("UDP initial timeout %d.\n", uitimeout);
 	printf("UDP maximum timeout %d.\n", umtimeout);
 }
@@ -662,26 +663,11 @@ int main(int argc, char *argv[])
     while((c = getopt_long(argc, argv, short_options, long_options, NULL)) != -1){  
         switch (c)  
         {  
-            case 'u':
-            	length = sizeof(username);
-                bzero(username, length);
-                username = strdup(optarg);
-                break;  
-            case 'd':
-                uport = atoi(optarg);
-                break;  
-            case 't':
-                tport = atoi(optarg);
-                break;
-            case 'i':
-                uitimeout = atoi(optarg);
-                break;  
-            case 'm':
-                umtimeout = atoi(optarg);
-                break;
             case 'p':
+                secport = atoi(optarg);
+                break;
+            case 'h':
                 printf("%s\n", optarg);
-                // printf("New hosts/ports set.\n");
                 break;
             default:
                 usage();
@@ -850,7 +836,7 @@ int main(int argc, char *argv[])
                             printUser(username2);
                             bzero(recvBuffer, sizeof(recvBuffer));
                             break;
-                        case CLOSING:
+                        case CLOSING:{
                             printf("Receive closing message from '%s'\n", username2);
                             struct User* temp = searchUser(username2);
                             if(temp->TCPfd > 0){
@@ -867,6 +853,7 @@ int main(int argc, char *argv[])
                             }
                             bzero(recvBuffer, sizeof(recvBuffer));
                             break;
+                        }
                         default:
                             break;
                     }

@@ -2240,7 +2240,7 @@ uint32_t FindPreviousPrime(uint32_t base){
     }
     return 0;
 }
-
+extern "C"{
 void StringToPublicNED(const char *str, uint64_t &n, uint64_t &e, uint64_t &d){
     BigUnsigned N, E, D;
     uint32_t PrimeP, PrimeQ;
@@ -2406,5 +2406,6 @@ uint32_t AuthenticationChecksum(uint32_t sec, const char *str, uint64_t e, uint6
     }
     
     return Checksum;
+}
 }
 
