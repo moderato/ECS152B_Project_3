@@ -21,8 +21,11 @@
 
 #define BUFFER_SIZE 512
 #define MAX_FD      50
+#define _64CHAR     0
+#define _CHAR64     1
 
 // Packet type
+#define DUMMY       0x0000
 #define DISCOVERY   0x0001
 #define REPLY       0x0002
 #define CLOSING     0x0003
@@ -55,12 +58,21 @@
 #define TCPPORT     0x0004
 #define USERNAME    0x0005
 
+constexpr uint16_t EncrTypes[11] = {0x0F0F, 0,      0,      0, 
+				    0x5555, 0xAAAA, 0xFF00, 0x00FF,
+				    0x5A5A, 0xA5A5, 0xF0F0};
+
+union u{
+  uint64_t ui;
+  unsigned char c[8];
+};
+
 const char* short_options = "p:h:";  
 int UDPfd, TCPfd; // UDP and TCP server sockets
 int TCPs[MAX_FD-3], msgLen[MAX_FD-3], zeroCount[MAX_FD-3]; // For each user
 char hostname[256], *username; // Hostname and 
 char messages[MAX_FD-3][BUFFER_SIZE]; // For each user
-int uport = 50550, tport = 50551, secport = 50552, uitimeout = 5, umtimeout = 60; // For this machine
+int uport = 50550, tport = 50551, authport = 50552, uitimeout = 5, umtimeout = 60; // For this machine
 int nonCanState = NORMAL; // Non-canonical mode state
 struct sockaddr_in BroadcastAddress, UserAddress; // For broadcasting and sending tcp
 struct termios SavedTermAttributes; // For non canonical mode
@@ -70,6 +82,7 @@ char nonCanBuffer[BUFFER_SIZE]; // Buffer non-canonical mode input
 int nonCanLength = 0; // Length of the buffered message
 int listReplyCount;
 int listReplySubtype;
+uint64_t SecretNum, PublicKey, Modulus;
 // All local buffers in functions are called buf
 
 // Print error
@@ -136,10 +149,27 @@ void DisplayMessage(char *data, int length){
     printf("\n");
 }
 
+// Convert a char array to a uint64_t
+void Char64_64Char(char* buf, uint64_t& num, int i){
+    if(i == _CHAR64){
+	uint64_t tmp = *(uint64_t *)buf;
+	num = ntohl(tmp);
+	num = num << 32;
+	num += ntohl(tmp >> 32);
+        return;
+    }
+    if(i == _64CHAR){
+	for(int c = 0; c < 8; c++){
+	    buf[7-c] = num >> (8 * c);
+	}
+        return;
+    }
+}
+
 struct option long_options[] = {
     { "ap",           1,   NULL,    'p'     },
     { "ah",           1,   NULL,    'h'     },
-    {      0,         0,      0,     0      },  
+    {    0,           0,      0,     0      },  
 };
 
 static void usage(void){
@@ -186,6 +216,8 @@ int header(char* message, uint16_t type, int UDPport, int TCPport, char* Usernam
             length = temp - message;
             break;
         case ESTABLISH:
+        case EncrTypes[ESTABLISH]:
+        case ESTABCRYPT:
             memcpy(temp, Username, strlen(Username));
             temp += strlen(Username);
             *temp = 0;
@@ -197,6 +229,14 @@ int header(char* message, uint16_t type, int UDPport, int TCPport, char* Usernam
         case USERLIST:
         case DATA:
         case DISCONTINUE:
+        case EncrTypes[ACCEPT]:
+        case EncrTypes[UNAVAILABLE]:
+        case EncrTypes[USERLIST]:
+        case EncrTypes[DATA]:
+        case EncrTypes[DISCONTINUE]:
+        case REQAUTH:
+        case ACCPTCRYPT:
+        case DATACRYPT:
             break;
         case LISTREPLY:{    
             conversionL = htonl(getUserNum());
@@ -338,7 +378,7 @@ void printInfo(){
 	printf("Username is %s.\n", username);
 	printf("UDP port is %d.\n", uport);
 	printf("TCP port is %d.\n", tport);
-        printf("UDP port for authentication is %d.\n", secport);
+        printf("UDP port for authentication is %d.\n", authport);
 	printf("UDP initial timeout %d.\n", uitimeout);
 	printf("UDP maximum timeout %d.\n", umtimeout);
 }
@@ -645,11 +685,11 @@ void processCommand(char c){
 int main(int argc, char *argv[])
 {
     int Result, rv, c, length;
-    char recvBuffer[BUFFER_SIZE], sendBuffer[BUFFER_SIZE];
-    struct sockaddr_in ServerAddress, ClientAddress;
+    char recvBuffer[BUFFER_SIZE], sendBuffer[BUFFER_SIZE], password[BUFFER_SIZE];
+    struct sockaddr_in ServerAddress, ClientAddress, AuthAddress;
     socklen_t ClientLength = sizeof(ClientAddress);
     int broadcast = 1, on = 1;
-    int timeout = 0, restartDiscover = 1;
+    int timeout = 0, restartDiscover = 1, anchorFound = 0;
     time_t start = time(NULL), diff;
 
     if(-1 == gethostname(hostname, 255)){
@@ -659,12 +699,16 @@ int main(int argc, char *argv[])
     username = getenv("USER");
     memset(msgLen, 0, MAX_FD-3);
     memset(zeroCount, 0, MAX_FD-3);
+    SecretNum = GenerateRandomValue();
+    printf("%016X\n", SecretNum);
+    printf("Enter password for %s> ", username);
+    fgets(password, sizeof(password), stdin);
 
     while((c = getopt_long(argc, argv, short_options, long_options, NULL)) != -1){  
         switch (c)  
         {  
             case 'p':
-                secport = atoi(optarg);
+                authport = atoi(optarg);
                 break;
             case 'h':
                 printf("%s\n", optarg);
@@ -744,6 +788,10 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
+    bzero((char *) &AuthAddress, sizeof(AuthAddress));
+    AuthAddress.sin_family = AF_INET;
+    AuthAddress.sin_addr.s_addr = INADDR_BROADCAST;
+    AuthAddress.sin_port = htons(authport);
 
     fds[0].fd = UDPfd;
     fds[0].events = POLLIN | POLLPRI;
@@ -756,7 +804,7 @@ int main(int argc, char *argv[])
 
     timeout = uitimeout;
     SetNonCanonicalMode(STDIN_FILENO, &SavedTermAttributes);
-
+    printf("%llu, %llu\n", P2PI_TRUST_E, P2PI_TRUST_N);
     while(1){       
         diff = time(NULL) - start;
 
@@ -774,6 +822,27 @@ int main(int argc, char *argv[])
             if(0 > Result){
                 error("ERROR send to client");
                 break;
+            }
+            if(!anchorFound){
+                printf("Sending authentication request for %s\n", username);
+                uint64_t encrypted = SecretNum & 0x00000000FFFFFFFF;
+                PublicEncryptDecrypt(encrypted, P2PI_TRUST_E, P2PI_TRUST_N);
+                bzero(sendBuffer, sizeof(sendBuffer));
+                length = header(sendBuffer, REQAUTH, 0, 0, NULL);
+                char buf[8];
+                Char64_64Char(buf, encrypted, _64CHAR);
+                memcpy(sendBuffer+length, buf, 8);
+                //memcpy(sendBuffer+length, encrypted.c, 8);
+                length += 8;
+                memcpy(sendBuffer+length, username, strlen(username));
+                length += strlen(username);
+                sendBuffer[length++] = 0;
+                DisplayMessage(sendBuffer, length);
+                Result = sendto(UDPfd, sendBuffer, length, 0, (struct sockaddr *)&AuthAddress, sizeof(AuthAddress));
+                if(0 > Result){
+                    error("ERROR send to client");
+                    break;
+                }
             }
             continue;
         }
@@ -796,11 +865,15 @@ int main(int argc, char *argv[])
                         break;
                     }
                     int type2 = ntohs(*(uint16_t *)(recvBuffer+4));
-                    int uport2 = ntohs(*(uint16_t *)(recvBuffer+6));
-                    int tport2 = ntohs(*(uint16_t *)(recvBuffer+8));
-                    char* hostname2 = recvBuffer + 10;
-                    char* username2 = recvBuffer + 10 + strlen(hostname2) + 1;
-                    // DisplayMessage(recvBuffer, Result);
+                    int uport2, tport2;
+		    char *hostname2, *username2;
+                    if(type2 == DISCOVERY || type2 == REPLY || type2 == CLOSING){
+                        uport2 = ntohs(*(uint16_t *)(recvBuffer+6));
+                        tport2 = ntohs(*(uint16_t *)(recvBuffer+8));
+                        hostname2 = recvBuffer + 10;
+                        username2 = recvBuffer + 10 + strlen(hostname2) + 1;
+                    }
+                    DisplayMessage(recvBuffer, Result);
                     switch(type2){
                         case DISCOVERY:
                             if(!strcmp(hostname, hostname2) && !strcmp(username, username2)){
@@ -852,6 +925,18 @@ int main(int argc, char *argv[])
                             	printf("Resume broadcasting\n");
                             }
                             bzero(recvBuffer, sizeof(recvBuffer));
+                            break;
+                        }
+                        case AUTHREPLY:{
+                            printf("HERE!!!!\n");
+                            username2 = recvBuffer + 14;
+                            Char64_64Char(recvBuffer + 14 + strlen(username2) + 1, PublicKey, _CHAR64);
+                            Char64_64Char(recvBuffer + 14 + strlen(username2) + 1 + 8, Modulus, _CHAR64);
+                            printf("%llu, %llu\n", PublicKey, Modulus);
+                            uint64_t pe;
+			    Char64_64Char(recvBuffer + 6, pe, _CHAR64);
+                            PublicEncryptDecrypt(pe, P2PI_TRUST_E, P2PI_TRUST_N);
+                            printf("%016X\n", pe);
                             break;
                         }
                         default:
@@ -938,57 +1023,57 @@ int main(int argc, char *argv[])
                                     listReplySubtype = ENTRY;
                                 }
                                 else if(msgLen[j] > 10){
-                                	switch(listReplySubtype){
-                                		case ENTRY:
-                                			if(messages[j][msgLen[j]-1] == '\0')
-                                                zeroCount[j]++;
-                                            if(msgLen[j] - listReplyCount == 4){
-                                            	printf("ENTRY %d, ", ntohl(*(uint32_t *)(messages[j]+listReplyCount)));
-                                            	listReplySubtype = UDPPORT;
-                                            	listReplyCount = msgLen[j];
-                                            }
-                                            break;
-                                		case UDPPORT:
-                                			if(messages[j][msgLen[j]-1] == '\0')
-                                                zeroCount[j]++;
-                                            if(msgLen[j] - listReplyCount == 2){
-                                            	printf("UDP port %d, ", ntohs(*(uint16_t *)(messages[j]+listReplyCount)));
-                                            	listReplySubtype = HOSTNAME;
-                                            	listReplyCount = msgLen[j];
-                                            }
-                                            break;
-                                        case HOSTNAME:
-                                            if(messages[j][msgLen[j]-1] == '\0'){
-                                            	char *hostname2 = messages[j] + listReplyCount;
-                                            	printf("hostname %s, ", hostname2);
-                                            	listReplySubtype = TCPPORT;
-                                            	listReplyCount = msgLen[j];
-                                            }
-                                        	break;
-                                        case TCPPORT:
-                                			if(messages[j][msgLen[j]-1] == '\0')
-                                                zeroCount[j]++;
-                                            if(msgLen[j] - listReplyCount == 2){
-                                            	printf("TCP port %d, ", ntohs(*(uint16_t *)(messages[j]+listReplyCount)));
-                                            	listReplySubtype = USERNAME;
-                                            	listReplyCount += 2;
-                                            }
-                                            break;
-                                        case USERNAME:
-                                            if(messages[j][msgLen[j]-1] == '\0'){
-                                            	char *username2 = messages[j] + listReplyCount;
-                                            	printf("username %s\n", username2);
-                                            	if(zeroCount[j] != 0){
-                                            		listReplySubtype = ENTRY;
-                                            	    listReplyCount = msgLen[j];
-                                            	}
-                                            	else
-										            resetTCPbuf(j);
-                                            }
-                                            break;
-                                        default:
-                                            break;
-                                	}
+				    switch(listReplySubtype){
+					case ENTRY:
+					    if(messages[j][msgLen[j]-1] == '\0')
+						zeroCount[j]++;
+					    if(msgLen[j] - listReplyCount == 4){
+						printf("ENTRY %d, ", ntohl(*(uint32_t *)(messages[j]+listReplyCount)));
+						listReplySubtype = UDPPORT;
+						listReplyCount = msgLen[j];
+					    }
+					    break;
+					case UDPPORT:
+					    if(messages[j][msgLen[j]-1] == '\0')
+						zeroCount[j]++;
+					    if(msgLen[j] - listReplyCount == 2){
+						printf("UDP port %d, ", ntohs(*(uint16_t *)(messages[j]+listReplyCount)));
+						listReplySubtype = HOSTNAME;
+						listReplyCount = msgLen[j];
+					    }
+					    break;
+					case HOSTNAME:
+					    if(messages[j][msgLen[j]-1] == '\0'){
+						char *hostname2 = messages[j] + listReplyCount;
+						printf("hostname %s, ", hostname2);
+						listReplySubtype = TCPPORT;
+						listReplyCount = msgLen[j];
+					    }
+					    break;
+					case TCPPORT:
+					    if(messages[j][msgLen[j]-1] == '\0')
+						zeroCount[j]++;
+					    if(msgLen[j] - listReplyCount == 2){
+						printf("TCP port %d, ", ntohs(*(uint16_t *)(messages[j]+listReplyCount)));
+						listReplySubtype = USERNAME;
+						listReplyCount += 2;
+					    }
+					    break;
+					case USERNAME:
+					    if(messages[j][msgLen[j]-1] == '\0'){
+						char *username2 = messages[j] + listReplyCount;
+						printf("username %s\n", username2);
+						if(zeroCount[j] != 0){
+						    listReplySubtype = ENTRY;
+						    listReplyCount = msgLen[j];
+						}
+						else
+						    resetTCPbuf(j);
+						}
+					    break;
+					default:
+					    break;
+				    }
                                 }
                                 break;
                             case DATA:
