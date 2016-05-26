@@ -15,7 +15,10 @@ struct User{
     char Hostname[STRING_SIZE];
     struct User* nextUser;
     int Encrypted;
+    int Authenticated;
     uint64_t SequenceNum;
+    uint64_t PublicKey;
+    uint64_t Modulus;
 };
 
 struct User *head = (struct User *) NULL;
@@ -36,7 +39,10 @@ struct User* initUser(int UDPport, int TCPport, char* Hostname, char* Username){
         strcpy(ptr->Hostname, Hostname);
         ptr->nextUser = NULL;
         ptr->Encrypted = 0;
+        ptr->Authenticated = 0;
         ptr->SequenceNum = 0;
+        ptr->PublicKey = 0;
+        ptr->Modulus = 0;
         return ptr;                         
     }
 }
@@ -100,7 +106,8 @@ void printUser(char* Username)
     printf("User name: %s, ", temp->Username);
     printf("UDP port: %d, ", temp->UDPport);
     printf("TCP port: %d, ", temp->TCPport);
-    printf("Encrypted?: %s, ", temp->Encrypted ? "Yes" : "No");
+    printf("%s, ", temp->Encrypted ? "Encrypted" : "Unencrypted");
+    printf("%s, ", temp->Authenticated ? "Authenticated" : "Unauthenticated");
     printf("Sequence Number: %llu\n", temp->SequenceNum);
 }
 
