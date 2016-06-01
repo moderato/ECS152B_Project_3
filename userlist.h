@@ -14,11 +14,9 @@ struct User{
     char Username[STRING_SIZE];
     char Hostname[STRING_SIZE];
     struct User* nextUser;
-    int Encrypted;
-    int Authenticated;
-    uint64_t SequenceNum;
-    uint64_t PublicKey;
-    uint64_t Modulus;
+    char Authenticated;
+    char isRequestor;
+    uint64_t SequenceNum[2];
 };
 
 struct User *head = (struct User *) NULL;
@@ -38,11 +36,10 @@ struct User* initUser(int UDPport, int TCPport, char* Hostname, char* Username){
         strcpy(ptr->Username, Username);
         strcpy(ptr->Hostname, Hostname);
         ptr->nextUser = NULL;
-        ptr->Encrypted = 0;
         ptr->Authenticated = 0;
-        ptr->SequenceNum = 0;
-        ptr->PublicKey = 0;
-        ptr->Modulus = 0;
+        ptr->isRequestor = 0;
+        ptr->SequenceNum[0] = 0;
+        ptr->SequenceNum[1] = 0;
         return ptr;                         
     }
 }
@@ -106,9 +103,10 @@ void printUser(char* Username)
     printf("User name: %s, ", temp->Username);
     printf("UDP port: %d, ", temp->UDPport);
     printf("TCP port: %d, ", temp->TCPport);
-    printf("%s, ", temp->Encrypted ? "Encrypted" : "Unencrypted");
+    printf("%s, ", temp->isRequestor? "Requestor" : "Acceptor");
     printf("%s, ", temp->Authenticated ? "Authenticated" : "Unauthenticated");
-    printf("Sequence Number: %llu\n", temp->SequenceNum);
+    printf("Sequence Number: %llu, ", temp->SequenceNum[0]);
+    printf("Sequence Number 2: %llu\n", temp->SequenceNum[1]);
 }
 
 void printList()
@@ -152,7 +150,7 @@ void deleteUser(char* Username)
     
     if(temp == prev){
         head = head->nextUser;
-        if(end == temp) 
+        if(end == temp)
            end = end->nextUser;
         free(temp);
     }
