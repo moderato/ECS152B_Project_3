@@ -209,7 +209,7 @@ void prepareEncrMsg(uint16_t basicType, char* data, int& dataLen, char* userName
         r = rand();
         user->SequenceNum[user->isRequestor] += user->isRequestor ? 1 : -1;
         if(r % 10 == 0){// 10% possibility to insert a dummy message
-            printf("Insert dummy data\n");
+            // printf("Insert dummy data\n");
             conversion = htons(EncrTypes[DUMMY]);
             memcpy(temp, &conversion, 2);
             bzero(padding, sizeof(padding));
@@ -217,11 +217,11 @@ void prepareEncrMsg(uint16_t basicType, char* data, int& dataLen, char* userName
             memcpy(temp+2, padding, 62);
         }
         else{
-            printf("Normal data\n");
+            // printf("Normal data\n");
             memcpy(temp, temp2, 64);
             temp2 += 64;
         }
-        DisplayMessage(temp, 64);
+        // DisplayMessage(temp, 64);
         PrivateEncryptDecrypt((uint8_t *)temp, 64, user->SequenceNum[user->isRequestor]);
         temp += 64;
     }
