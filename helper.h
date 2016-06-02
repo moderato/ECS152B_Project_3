@@ -40,11 +40,22 @@ constexpr uint16_t EncrTypes[11] = {0x0F0F, 0,      0,      0,
 				    0x5A5A, 0xA5A5, 0xF0F0};
 
 extern char hostname[256];
+extern int TCPs[MAX_FD-SPECSOCKNUM], msgLen[MAX_FD-SPECSOCKNUM], zeroCount[MAX_FD-SPECSOCKNUM], dummyCount[MAX_FD-SPECSOCKNUM]; // For each user
+extern char messages[MAX_FD-SPECSOCKNUM][BUFFER_SIZE], decMessages[MAX_FD-SPECSOCKNUM][BUFFER_SIZE]; // For each user
 
 // Print error
 void error(const char *message){
     perror(message);
     exit(1);
+}
+
+// Reset TCP buffers
+void resetTCPbuf(int j){
+    bzero(messages[j], BUFFER_SIZE);
+    bzero(decMessages[j], BUFFER_SIZE);
+    zeroCount[j] = 0;
+    dummyCount[j] = 0;
+    msgLen[j] = 0;
 }
 
 int findBasicType(int encrType){
@@ -80,6 +91,49 @@ int searchFD(int fd, struct pollfd* FDS){
 			return -1;
 	}
 	return i;
+}
+
+// Print list reply when processed
+void printListReply(int j, char* message, int length){
+    // DisplayMessage(message, length);
+    int count = ntohl(*(uint32_t *)message);
+    printf("Receive list reply with %d user(s)\n", count);
+    char *temp = message + 4;
+    while(count > 0){
+        printf("ENTRY %d, ", ntohl(*(uint32_t *)(temp)));
+        temp += 4;
+        printf("UDP port %d, ", ntohs(*(uint16_t *)(temp)));
+        temp += 2;
+        printf("hostname %s, ", temp);
+        temp += strlen(temp) + 1;
+        printf("TCP port %d, ", ntohs(*(uint16_t *)(temp)));
+        temp += 2;
+        printf("username %s\n", temp);
+        temp += strlen(temp) + 1;
+        count--;
+    }
+    resetTCPbuf(j);
+}
+
+// Process List Reply
+void processListReply(int j, char* message, int length){
+    int numEntries;
+    numEntries = ntohl(*(uint32_t *)(message + 2));
+    char *ptr = message + 6;
+    while(numEntries > 0){
+        if(length - (ptr - message) < 6)
+            break;
+        ptr += 4; // Entry num
+        ptr += 2; // UDP port
+        while(*ptr++ != '\0' && length > ptr - message); // Hostname
+        if(length - (ptr - message) < 2)
+            break;
+        ptr += 2; // TCP port
+        while(*ptr++ != '\0' && length > ptr - message); // Username
+        if(length - (ptr - message == 0) && numEntries == 1)
+            printListReply(j, message+2, length-2);
+        numEntries--;
+    }
 }
 
 // Display message
@@ -189,7 +243,7 @@ void prepareEncrMsg(uint16_t basicType, char* data, int& dataLen, char* userName
     
     if(length % 64 != 0){
         GenerateRandomString(padding, 64 - length % 64, user->SequenceNum[user->isRequestor]);
-        memcpy(temp, padding, 64-length);
+        memcpy(temp, padding, 64- length % 64);
         length += 64 - length % 64;
     }
     

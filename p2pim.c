@@ -49,42 +49,27 @@
 #define NORMAL      0x0000
 #define TOCONNECT   0x0001
 #define TOSPEAK     0x0002
-#define INPUTMSG    0x0004
-#define TODELETE    0x0008
-#define TODISCON    0x0010
-#define TOREQUEST   0x0020
-#define ESTBAUTH    0x0040
-
-
-// List reply subtype
-#define ENTRY       0x0001
-#define UDPPORT     0x0002
-#define HOSTNAME    0x0003
-#define TCPPORT     0x0004
-#define USERNAME    0x0005
-
-union u{
-  uint64_t ui;
-  unsigned char c[8];
-};
+#define INPUTMSG    0x0003
+#define TODELETE    0x0004
+#define TODISCON    0x0005
+#define TOREQUEST   0x0006
+#define ESTBAUTH    0x0007
 
 const char* short_options = "p:h:";  
 int UDPfd, TCPfd; // UDP and TCP server sockets
 int TCPs[MAX_FD-SPECSOCKNUM], msgLen[MAX_FD-SPECSOCKNUM], zeroCount[MAX_FD-SPECSOCKNUM], dummyCount[MAX_FD-SPECSOCKNUM]; // For each user
+char messages[MAX_FD-SPECSOCKNUM][BUFFER_SIZE], decMessages[MAX_FD-SPECSOCKNUM][BUFFER_SIZE]; // For each user
 char hostname[256]; //Defined as extern in helper.h
 char *username;
-char messages[MAX_FD-SPECSOCKNUM][BUFFER_SIZE], decMessages[MAX_FD-SPECSOCKNUM][BUFFER_SIZE]; // For each user
 int uport = 50550, tport = 50551, authport = 50552, uitimeout = 5, umtimeout = 60; // For this machine
 int nonCanState = NORMAL; // Non-canonical mode state
 int anchorFound = 0; // If a trust anchor is found
-struct sockaddr_in AuthAddress;
-struct sockaddr_in BroadcastAddress, UserAddress; // For broadcasting and sending tcp
+struct sockaddr_in AuthAddress, BroadcastAddress, UserAddress; // For authentication, broadcasting and sending tcp
 struct termios SavedTermAttributes; // For non canonical mode
 struct pollfd fds[MAX_FD]; // Polling structures
 struct User* activeUser = NULL; // Who are we talking to
 char nonCanBuffer[BUFFER_SIZE]; // Buffer non-canonical mode input
 int nonCanLength = 0; // Length of the buffered message
-int listReplyCount, listReplySubtype;
 uint64_t SecretNum, PublicKey, Modulus, PrivateKey;
 
 
@@ -149,126 +134,6 @@ void SignalHandler(int param){
         deleteList(head);
     printf("Close up finished!\n");
     exit(0);
-}
-
-// Reset TCP buffers
-void resetTCPbuf(int j){
-    bzero(messages[j], BUFFER_SIZE);
-    bzero(decMessages[j], BUFFER_SIZE);
-    zeroCount[j] = 0;
-    dummyCount[j] = 0;
-    msgLen[j] = 0;
-}
-
-void processListReply(int j, int isEncrypted){
-    char* message;
-    int length;
-    if(!isEncrypted){
-        message = messages[j] + 4;
-        length = msgLen[j] - 4;
-        
-        if(length == 6){
-            zeroCount[j] = 2 * ntohl(*(uint32_t *)(message+2));
-            listReplyCount = 6;
-            listReplySubtype = ENTRY;
-        }
-        else if(length > 6){
-		    switch(listReplySubtype){
-		    case ENTRY:
-		        if(length - listReplyCount == 4){
-		            printf("ENTRY %d, ", ntohl(*(uint32_t *)(message+listReplyCount)));
-		            listReplySubtype = UDPPORT;
-		            listReplyCount += 4;
-		        }
-			    break;
-		    case UDPPORT:
-		        if(length - listReplyCount == 2){
-		            printf("UDP port %d, ", ntohs(*(uint16_t *)(message+listReplyCount)));
-		            listReplySubtype = HOSTNAME;
-		            listReplyCount += 2;
-		        }
-			    break;
-		    case HOSTNAME:
-			    if(message[length-1] == '\0'){
-			        zeroCount[j]--;
-			        char *hostname2 = message + listReplyCount;
-		            printf("hostname %s, ", hostname2);
-		            listReplySubtype = TCPPORT;
-		            listReplyCount = length;
-			    }
-			    break;
-		    case TCPPORT:
-		        if(length - listReplyCount == 2){
-		            printf("TCP port %d, ", ntohs(*(uint16_t *)(message+listReplyCount)));
-		            listReplySubtype = USERNAME;
-		            listReplyCount += 2;
-		        }
-			    break;
-		    case USERNAME:
-			    if(message[length-1] == '\0'){
-			        zeroCount[j]--;
-			        char *username2 = message + listReplyCount;
-			        printf("username %s\n", username2);
-			        if(zeroCount[j] != 0){
-				        listReplySubtype = ENTRY;
-				        listReplyCount = length;
-			        }
-			        else
-				        resetTCPbuf(j);
-			    }
-			    break;
-		    default:
-			    break;
-		    }
-	    }
-    }
-    else{
-        message = decMessages[j];
-        length = 64 * (msgLen[j] / 70 - dummyCount[j]);
-        
-        
-    }
-}
-
-void TCPmsgProcess(int j, int &fd){
-    int type, length, Result;
-    char buf[BUFFER_SIZE];
-    struct User* temp = searchUserByTCP(fd);
-    type = ntohs(*(uint16_t *)(messages[j]+4));
-    switch(type){
-        case ESTABLISH:
-        case DATA:
-        case ESTABCRYPT:
-            break;
-        case ACCEPT:
-            printf("Connection accepted!\n");
-            resetTCPbuf(j);
-            break;
-        case UNAVAILABLE:
-            temp->TCPfd = -1;
-            printf("Connection unavailable\n");
-            resetTCPbuf(j);
-            break;
-        case USERLIST:
-            printf("Sending user list...\n");
-            length = prepareHeader(buf, LISTREPLY, uport, tport, username);
-            prepareListReply(buf, length);
-            DisplayMessage(buf, length);
-            Result = write(fd, buf, length);
-            if(0 > Result){
-		        error("ERROR writing to socket");
-            }
-            resetTCPbuf(j);
-            break;
-        case DISCONTINUE:
-            printf("Receive discontinue from fd %d\n", fd);
-            fd = -1;
-            temp->TCPfd = -1;
-            resetTCPbuf(j);
-            break;
-        default:
-            break;
-    }
 }
 
 // Print information
@@ -464,6 +329,7 @@ void processCommand(char c){
 						if(0 > Result){
 							error("ERROR writing to socket");
 						}
+						printf("Waiting for reply...\n");
 					}
 					bzero(nonCanBuffer, BUFFER_SIZE);
 					nonCanLength = 0;
@@ -729,6 +595,7 @@ int main(int argc, char *argv[])
 
     signal(SIGTERM, SignalHandler);
     signal(SIGINT, SignalHandler);
+    signal(SIGSEGV, SignalHandler);
 
     UDPfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if(0 > UDPfd){
@@ -994,15 +861,40 @@ int main(int argc, char *argv[])
                     read(fds[i].fd, messages[j] + msgLen[j], 1);
                     msgLen[j]++;
                     // DisplayMessage(messages[j], msgLen[j]);
-                    // if(msgLen[j] > 0 && msgLen[j] <= BUFFER_SIZE && messages[j][msgLen[j]-1] == 0){
-                        // zeroCount[j]--;
-                    // }
-                    if(msgLen[j] == 6){
-                        TCPmsgProcess(j, fds[i].fd);
-                    }
-                    else if(msgLen[j] > 6){
+                    if(msgLen[j] >= 6){
                         type2 = ntohs(*(uint16_t *)(messages[j]+4));
                         switch(type2){
+                            case ACCEPT:
+                                printf("Connection accepted!\n");
+                                resetTCPbuf(j);
+                                break;
+                            case UNAVAILABLE:{
+                                struct User* temp = searchUserByTCP(fds[i].fd);
+                                temp->TCPfd = -1;
+                                printf("Connection unavailable\n");
+                                resetTCPbuf(j);
+                            }
+                                break;
+                            case USERLIST:
+                                bzero(sendBuffer, sizeof(sendBuffer));
+                                length = prepareHeader(sendBuffer, LISTREPLY, 0, 0, NULL);
+                                prepareListReply(sendBuffer, length);
+                                // DisplayMessage(sendBuffer, length);
+                                Result = write(fds[i].fd, sendBuffer, length);
+                                if(0 > Result){
+	                                error("ERROR writing to socket");
+                                }
+                                printf("User list sent!\n");
+                                resetTCPbuf(j);
+                                break;
+                            case DISCONTINUE:{
+                                printf("Receive discontinue from fd %d\n", fds[i].fd);
+                                struct User* temp = searchUserByTCP(fds[i].fd);
+                                fds[i].fd = -1;
+                                temp->TCPfd = -1;
+                                resetTCPbuf(j);
+                            }
+                                break;
                             case ESTABLISH:
                                 // DisplayMessage(messages[j], msgLen[j]);
                                 if(msgLen[j] > 0 && msgLen[j] <= BUFFER_SIZE && messages[j][msgLen[j]-1] == 0){
@@ -1023,7 +915,6 @@ int main(int argc, char *argv[])
                                         if(0 > Result){
                                             error("ERROR writing to socket");
                                         }
-                                        // DisplayMessage(sendBuffer, length);
                                         resetTCPbuf(j);
                                     }
                                     else{
@@ -1034,7 +925,6 @@ int main(int argc, char *argv[])
                                         if(0 > Result){
                                             error("ERROR writing to socket");
                                         }
-                                        // DisplayMessage(sendBuffer, length);
                                         temp->TCPfd = -1;
                                         resetTCPbuf(j);
                                     }
@@ -1078,7 +968,11 @@ int main(int argc, char *argv[])
                             }
                                 break;
                             case LISTREPLY:
-                                processListReply(j, 0);
+                                if(msgLen[j] >= 10){
+                                    if(msgLen[j] > 0 && msgLen[j] <= BUFFER_SIZE && messages[j][msgLen[j]-1] != '\0')
+                                        break;
+                                    processListReply(j, messages[j]+4, msgLen[j]-4);
+                                }
                                 break;
                             case DATA:
                                 if(msgLen[j] > 0 && msgLen[j] <= BUFFER_SIZE && messages[j][msgLen[j]-1] == 0){
@@ -1107,7 +1001,6 @@ int main(int argc, char *argv[])
                                 break;
                             case DATACRYPT:
                                 if(msgLen[j] % 70 == 0){
-                                    printf("Here!\n");
                                     // DisplayMessage(messages[j], msgLen[j]);
                                     char buf[64];
                                     memcpy(buf, messages[j] + 6 + msgLen[j] - 70, 64);
@@ -1122,13 +1015,13 @@ int main(int argc, char *argv[])
                                         dummyCount[j]++;
                                         break;
                                     }
-                                    int actualLen = 64 * (msgLen[j] / 70 - dummyCount[j]);
+                                    int actualLen;
+                                    actualLen = 64 * (msgLen[j] / 70 - dummyCount[j]);
                                     memcpy(decMessages[j] + actualLen - 64, buf, 64);
                                     // DisplayMessage(decMessages[j], actualLen);
                                     type3 = ntohs(*(uint16_t *)(decMessages[j]));
                                     switch(type3){
                                         case EncrTypes[USERLIST]:
-                                            printf("Sending user list...\n");
                                             bzero(sendBuffer, sizeof(sendBuffer));
                                             length = 0;
                                             prepareListReply(sendBuffer, length);
@@ -1138,6 +1031,7 @@ int main(int argc, char *argv[])
                                             if(0 > Result){
                                                 error("ERROR writing to socket");
                                             }
+                                            printf("User list sent!\n");
                                             resetTCPbuf(j);
                                             break;
                                         case EncrTypes[DATA]:{
@@ -1154,14 +1048,8 @@ int main(int argc, char *argv[])
                                         }
                                             break;
                                         case EncrTypes[LISTREPLY]:
-                                            printf("There\n");
-                                            resetTCPbuf(j);
-                                            // int index;
-                                            // char *tmp = decMessages[j] = ;
-                                            // zeroCount[j] = 2 * ntohl(*(uint32_t *)(decMessages[j]+2));
-                                            // while(index < actualLen){
-                                            // }
-                                            // processListReply(j, 1);
+                                            // DisplayMessage(decMessages[j], actualLen);
+                                            processListReply(j, decMessages[j], actualLen);
                                             break;
                                         case EncrTypes[DISCONTINUE]:
                                             printf("Receive discontinue from fd %d\n", fds[i].fd);
